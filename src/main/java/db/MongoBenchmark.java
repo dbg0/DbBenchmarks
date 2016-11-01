@@ -33,8 +33,10 @@ package db;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 
 import org.bson.Document;
+import org.bson.conversions.Bson;
 import org.openjdk.jmh.annotations.AuxCounters;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.Fork;
@@ -54,15 +56,17 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 import com.mongodb.MongoClient;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.Filters;
+import com.mongodb.client.model.ReplaceOneModel;
 
-@Warmup(iterations = 10)
-@Measurement(iterations = 10)
+@Warmup(iterations = 5)
+@Measurement(iterations = 5)
 @Fork(1)
 @State(Scope.Benchmark)
 public class MongoBenchmark {
-
 	private static final String DB = "MongoBenchmarks";
 	private static final String COLLECTION = "BenchmarkCollection";
+	private static final int COLLECTION_SIZE = 1000000;
 
 	@State(Scope.Thread)
 	@AuxCounters
@@ -107,7 +111,7 @@ public class MongoBenchmark {
 	}
 
 	private int insertBatch(Counters c) {
-		List<Document> batch = new ArrayList<>(rowsPerBatch);
+		List<Document> inserts = new ArrayList<>(rowsPerBatch);
 
 		for (int i = 0; i < rowsPerBatch; i++) {
 			Document doc = new Document();
@@ -117,48 +121,93 @@ public class MongoBenchmark {
 				c.updatedValues++;
 			}
 
-			batch.add(doc);
+			inserts.add(doc);
 			c.updates++;
 		}
 
-		collection.insertMany(batch);
+		collection.insertMany(inserts);
+		return c.updates;
+	}
+
+	private int upsertBatch(Counters c) {
+		ThreadLocalRandom rand = ThreadLocalRandom.current();
+
+		List<ReplaceOneModel<Document>> upserts = new ArrayList<>(rowsPerBatch);
+		for (int i = 0; i < rowsPerBatch; i++) {
+			int row = rand.nextInt(COLLECTION_SIZE);
+
+			Document doc = new Document();
+
+			List<Bson> indexList = new ArrayList<>(indexedValues);
+			for (int k = 0; k < indexedValues; k++) {
+				indexList.add(Filters.eq("key" + k, "value" + row));
+				doc.append("key" + k, "value" + row);
+				c.updatedValues++;
+			}
+
+			for (int j = indexedValues; j < valuesPerRow; j++) {
+				doc.append("key" + j, "value" + j);
+				c.updatedValues++;
+			}
+
+			upserts.add(new ReplaceOneModel<Document>(Filters.and(indexList), doc));
+			c.updates++;
+		}
+
+		collection.bulkWrite(upserts);
 		return c.updates;
 	}
 
 	@Threads(1)
 	@Benchmark
-	public int insert1T(Counters c) {
+	public int insert01T(Counters c) {
 		return insertBatch(c);
 	}
 
 	@Threads(2)
 	@Benchmark
-	public int insert2T(Counters c) {
-		return insert1T(c);
+	public int insert02T(Counters c) {
+		return insertBatch(c);
 	}
 
 	@Threads(4)
 	@Benchmark
-	public int insert4T(Counters c) {
-		return insert1T(c);
+	public int insert04T(Counters c) {
+		return insertBatch(c);
 	}
 
 	@Threads(8)
 	@Benchmark
-	public int insert8T(Counters c) {
-		return insert1T(c);
+	public int insert08T(Counters c) {
+		return insertBatch(c);
 	}
 
 	@Threads(1)
 	@Benchmark
-	public int upsert1T(Counters c) {
+	public int upsert01T(Counters c) {
+		return upsertBatch(c);
+	}
 
-		// collection.bulkWrite(arg0)
-		return c.updates;
+	@Threads(2)
+	@Benchmark
+	public int upsert02T(Counters c) {
+		return upsertBatch(c);
+	}
+
+	@Threads(4)
+	@Benchmark
+	public int upsert04T(Counters c) {
+		return upsertBatch(c);
+	}
+
+	@Threads(8)
+	@Benchmark
+	public int upsert08T(Counters c) {
+		return upsertBatch(c);
 	}
 
 	public static void main(String[] args) throws RunnerException {
-		Options opts = new OptionsBuilder().include(MongoBenchmark.class.getSimpleName() + ".insert1T").build();
+		Options opts = new OptionsBuilder().include(MongoBenchmark.class.getSimpleName()).build();
 		new Runner(opts).run();
 	}
 }

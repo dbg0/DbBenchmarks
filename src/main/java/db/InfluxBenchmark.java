@@ -20,8 +20,8 @@ import org.openjdk.jmh.runner.RunnerException;
 import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
 
-@Warmup(iterations = 10)
-@Measurement(iterations = 10)
+@Warmup(iterations = 5)
+@Measurement(iterations = 5)
 @Fork(1)
 @State(Scope.Benchmark)
 public class InfluxBenchmark {
@@ -35,19 +35,6 @@ public class InfluxBenchmark {
 		public int updatedValues;
 	}
 
-	public static class Populate {
-
-		@Setup
-		public void setup(InfluxBenchmark b) {
-			int c = 0;
-			while (c < Config.POPULATE_ROWS) {
-				int batchSize = Math.min(Config.POPULATE_ROWS_PER_BATCH, Config.POPULATE_ROWS - c);
-				insert(b.client, batchSize, b.valuesPerRow);
-				c += batchSize;
-			}
-		}
-	}
-
 	@Param(value = { "1", "100", "1000" })
 	private int rowsPerBatch;
 
@@ -55,7 +42,9 @@ public class InfluxBenchmark {
 	private int valuesPerRow;
 
 	@Param(value = { "0", "1", "10" })
-	private double indexedValuesRatio;
+	private double indexedValuesPct;
+
+	private int indexedValues;
 
 	InfluxDB client;
 
@@ -65,6 +54,8 @@ public class InfluxBenchmark {
 
 		client.deleteDatabase(DB);
 		client.createDatabase(DB);
+
+		indexedValues = (int) Math.round(Math.ceil(valuesPerRow * indexedValuesPct / 100.0));
 	}
 
 	@TearDown
@@ -72,53 +63,55 @@ public class InfluxBenchmark {
 		client.deleteDatabase(DB);
 	}
 
-	@Benchmark
-	public int insert(Counters c) {
-		c.updatedValues += insert(client, rowsPerBatch, valuesPerRow);
-		c.updates += rowsPerBatch;
+	private int insertBatch(Counters c) {
+		BatchPoints inserts = BatchPoints.database(DB).build();
+
+		for (int row = 0; row < rowsPerBatch; row++) {
+			Point.Builder insert = Point.measurement(MEASUREMENT);
+
+			for (int tag = 0; tag < indexedValues; tag++) {
+				insert.tag("tag" + tag, "value" + c.updates);
+				c.updatedValues++;
+			}
+
+			for (int field = indexedValues; field < valuesPerRow; field++) {
+				insert.addField("field" + field, "value" + field);
+				c.updatedValues++;
+			}
+			inserts.point(insert.build());
+			c.updates++;
+		}
+
+		client.write(inserts);
 		return c.updates;
 	}
 
-	private static int insert(InfluxDB client, int rowsPerBatch, int valuesPerRow) {
-		BatchPoints batch = BatchPoints.database(DB).build();
-
-		int rowValues = 0;
-		for (int row = 0; row < rowsPerBatch; row++) {
-			Point.Builder b = Point.measurement(MEASUREMENT);
-			for (int field = 0; field < valuesPerRow; field++) {
-				b.addField("field" + field, "value" + field);
-			}
-			rowValues += valuesPerRow;
-			batch.point(b.build());
-		}
-
-		client.write(batch);
-		return rowValues;
+	@Threads(1)
+	@Benchmark
+	public int insert01T(Counters c) {
+		return insertBatch(c);
 	}
 
 	@Threads(2)
 	@Benchmark
-	public int insertT2(Counters c) {
-		return insert(c);
+	public int insert02T(Counters c) {
+		return insertBatch(c);
 	}
 
 	@Threads(4)
 	@Benchmark
-	public int insertT4(Counters c) {
-		return insert(c);
+	public int insert04T(Counters c) {
+		return insertBatch(c);
 	}
 
 	@Threads(8)
 	@Benchmark
-	public int insertT8(Counters c) {
-		return insert(c);
+	public int insert08T(Counters c) {
+		return insertBatch(c);
 	}
-	
-
 
 	public static void main(String[] args) throws RunnerException {
-		Options opts = new OptionsBuilder().include("InfluxBenchmark").param("batchSize", "1").param("docSize", "1")
-				.build();
+		Options opts = new OptionsBuilder().include(InfluxBenchmark.class.getSimpleName()).build();
 		new Runner(opts).run();
 	}
 }
